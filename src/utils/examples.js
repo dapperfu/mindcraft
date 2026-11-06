@@ -49,14 +49,22 @@ export class Examples {
 
         let turn_text = this.turnsToText(turns);
         if (this.model !== null) {
-            let embedding = await this.model.embed(turn_text);
-            this.examples.sort((a, b) => 
-                cosineSimilarity(embedding, this.embeddings[this.turnsToText(b)]) -
-                cosineSimilarity(embedding, this.embeddings[this.turnsToText(a)])
-            );
+            let embedding;
+            try {
+                embedding = await this.model.embed(turn_text);
+            } catch (err) {
+                console.warn('Embedding failed for example ranking, using word-overlap instead.', err.message || err);
+                this.model = null;
+            }
+            if (this.model !== null && Array.isArray(embedding) && embedding.length > 0) {
+                this.examples.sort((a, b) =>
+                    cosineSimilarity(embedding, this.embeddings[this.turnsToText(b)]) -
+                    cosineSimilarity(embedding, this.embeddings[this.turnsToText(a)])
+                );
+            }
         }
-        else {
-            this.examples.sort((a, b) => 
+        if (this.model === null) {
+            this.examples.sort((a, b) =>
                 wordOverlapScore(turn_text, this.turnsToText(b)) -
                 wordOverlapScore(turn_text, this.turnsToText(a))
             );

@@ -70,9 +70,23 @@ export class Ollama {
 
     async embed(text) {
         let model = this.model_name || 'embeddinggemma';
-        let body = { model: model, input: text };
-        let res = await this.send(this.embedding_endpoint, body);
-        return res['embedding'];
+        // /api/embeddings is the deprecated endpoint and expects `prompt`.
+        // Sending `input` there yields { embedding: [] }, so every example ties
+        // and selection stays in file order. /api/embed is the current endpoint.
+        let endpoint = '/api/embed';
+        let body = { model, input: text };
+        let res = await this.send(endpoint, body);
+        let embedding = Array.isArray(res?.embeddings) ? res.embeddings[0] : null;
+        if (!Array.isArray(embedding) || embedding.length === 0) {
+            endpoint = this.embedding_endpoint;
+            body = { model, prompt: text };
+            res = await this.send(endpoint, body);
+            embedding = res?.embedding;
+        }
+        if (!Array.isArray(embedding) || embedding.length === 0) {
+            throw new Error('Ollama returned an empty embedding');
+        }
+        return embedding;
     }
 
     async send(endpoint, body) {
