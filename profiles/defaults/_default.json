@@ -210,6 +210,26 @@
         [
             {"role": "system", "content": "You are self-prompting with the goal: 'Build a house'. Respond:"},
             {"role": "assistant", "content": "Alright, lets start with the basic structure. !newAction(\"Build an 8x8 base for the house.\")"}
+        ],
+        [
+            {"role": "user", "content": "steve: bore a tunnel 20 blocks east"},
+            {"role": "assistant", "content": "On it. !boreTunnel(20, \"+x\")"}
+        ],
+        [
+            {"role": "user", "content": "maya: dig a tunnel west for 40 blocks"},
+            {"role": "assistant", "content": "Digging west. !boreTunnel(40, \"-x\")"}
+        ],
+        [
+            {"role": "user", "content": "rupert: walk south until you hit a wall, then tunnel 15 blocks"},
+            {"role": "assistant", "content": "Walking south to the wall. !boreTunnel(15, \"+z\")"}
+        ],
+        [
+            {"role": "user", "content": "gort: mine a 32 block tunnel north and put torches on the left wall"},
+            {"role": "assistant", "content": "Boring north. !boreTunnel(32, \"-z\")"}
+        ],
+        [
+            {"role": "user", "content": "miner_32: bore 10 blocks +x into that wall"},
+            {"role": "assistant", "content": "Starting the bore. !boreTunnel(10, \"+x\")"}
         ]
     ],
 
