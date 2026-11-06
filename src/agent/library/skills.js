@@ -2513,13 +2513,10 @@ export async function digStairs(bot, direction, y) {
         log(bot, `Already at or below Y ${targetY}.`);
         return true;
     }
-    if (targetY > feet.y) {
-        log(bot, `Target Y ${targetY} is above current feet Y ${feet.y}.`);
-        return false;
-    }
 
     bot.modes.pause('unstuck');
     bot.modes.pause('idle_staring');
+    bot.modes.pause('torch_placing');
     let steps = 0;
     let torchesPlaced = 0;
 
@@ -2531,7 +2528,10 @@ export async function digStairs(bot, direction, y) {
                 return false;
             }
 
-            await equipBestPickaxe(bot);
+            const equipped = await equipBestPickaxe(bot);
+            if (!equipped && bot.heldItem && !bot.heldItem.name.endsWith('_pickaxe')) {
+                try { await bot.unequip('hand'); } catch (err) { /* keep digging with current hand */ }
+            }
 
             const headPos = feet.offset(axis.dx, 1, axis.dz);
             const facePos = feet.offset(axis.dx, 0, axis.dz);
@@ -2588,8 +2588,9 @@ export async function digStairs(bot, direction, y) {
 
             steps++;
             if (steps % TORCH_SPACING === 0) {
-                const placed = await placeStairLeftTorch(bot, facePos.offset(0, -1, 0), axis);
+                const placed = await placeStairLeftTorch(bot, floorPos, axis);
                 if (placed) torchesPlaced++;
+                await equipBestPickaxe(bot);
             }
 
             const beforeY = feet.y;
@@ -2611,6 +2612,7 @@ export async function digStairs(bot, direction, y) {
     } finally {
         bot.pathfinder.stop();
         await haltMovement(bot);
+        bot.modes.unpause('torch_placing');
         bot.modes.unpause('idle_staring');
         bot.modes.unpause('unstuck');
     }
