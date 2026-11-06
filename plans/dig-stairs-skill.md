@@ -6,7 +6,7 @@ The stair shape follows the choice already made: each cycle opens only the next 
 
 - [x] Save this plan to plans/dig-stairs-skill.md
 - [x] Add digStairs in src/agent/library/skills.js: direction parsing, one-step stair loop, strongest pickaxe, left-wall torches every 10 steps
-- [ ] Register !digStairs(direction, y) in src/agent/commands/actions.js
+- [x] Register !digStairs(direction, y) in src/agent/commands/actions.js
 
 ## API
 

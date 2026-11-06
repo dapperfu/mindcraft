@@ -481,6 +481,28 @@ export const actionsList = [
         })
     },
     {
+        name: '!digStairs',
+        description: 'Dig a one-block staircase in +x, -x, +z, or -z until the bot feet are at the target Y. Equips the strongest pickaxe when one is in the inventory. Places a torch on the left wall every 10 steps when torches are in the inventory.',
+        params: {
+            'direction': { type: 'string', description: 'One of "+x", "-x", "+z", or "-z". Quote the direction.' },
+            'y': { type: 'int', description: 'Absolute feet Y to dig down to.', domain: [-64, 320, '[]'] }
+        },
+        perform: runAsAction(async (agent, direction, y) => {
+            await skills.digStairs(agent.bot, direction, y);
+        })
+    },
+    {
+        name: '!boreTunnel',
+        description: 'Walk +x, -x, +z, or -z until a wall, then dig a 1x2 tunnel that many blocks into the wall. Equips a pickaxe when one is in the inventory. Places a torch on the left wall every 10 blocks when torches are in the inventory.',
+        params: {
+            'distance': { type: 'int', description: 'How many blocks to bore into the wall.', domain: [1, Number.MAX_SAFE_INTEGER] },
+            'direction': { type: 'string', description: 'One of "+x", "-x", "+z", or "-z". Quote the direction.' }
+        },
+        perform: runAsAction(async (agent, distance, direction) => {
+            await skills.boreTunnel(agent.bot, distance, direction);
+        })
+    },
+    {
         name: '!goToSurface',
         description: 'Moves the bot to the highest block above it (usually the surface).',
         params: {},
