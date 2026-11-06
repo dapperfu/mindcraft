@@ -482,10 +482,10 @@ export const actionsList = [
     },
     {
         name: '!digStairs',
-        description: 'Dig a one-block staircase in +x, -x, +z, or -z until the bot feet are at the target Y. Equips the strongest pickaxe when one is in the inventory. Places a torch on the left wall every 10 steps when torches are in the inventory.',
+        description: 'Dig a one-block staircase in +x, -x, +z, or -z until the bot feet are at the target Y. Equips the strongest pickaxe when one is in the inventory. Places a torch on the left wall every 10 steps when torches are in the inventory. Example: !digStairs("+x", 32)',
         params: {
-            'direction': { type: 'string', description: 'One of "+x", "-x", "+z", or "-z". Quote the direction.' },
-            'y': { type: 'int', description: 'Absolute feet Y to dig down to.', domain: [-64, 320, '[]'] }
+            'direction': { type: 'string', description: 'Cardinal dig axis as a quoted string: "+x", "-x", "+z", or "-z". Aliases: "x"/"east", "z"/"south", "west", "north".' },
+            'y': { type: 'int', description: 'Absolute feet Y to dig down to. Inclusive range [-64, 320].', domain: [-64, 320, '[]'] }
         },
         perform: runAsAction(async (agent, direction, y) => {
             await skills.digStairs(agent.bot, direction, y);
