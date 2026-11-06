@@ -1960,6 +1960,662 @@ export async function digDown(bot, distance = 10) {
     return true;
 }
 
+const TUNNEL_AXES = {
+    '+x': { dx: 1, dz: 0, leftDx: 0, leftDz: -1, placeOn: 'north', label: '+x' },
+    '-x': { dx: -1, dz: 0, leftDx: 0, leftDz: 1, placeOn: 'south', label: '-x' },
+    '+z': { dx: 0, dz: 1, leftDx: 1, leftDz: 0, placeOn: 'east', label: '+z' },
+    '-z': { dx: 0, dz: -1, leftDx: -1, leftDz: 0, placeOn: 'west', label: '-z' },
+};
+
+const TUNNEL_DIRECTION_ALIASES = {
+    '+x': '+x',
+    'x': '+x',
+    'east': '+x',
+    '-x': '-x',
+    'west': '-x',
+    '+z': '+z',
+    'z': '+z',
+    'south': '+z',
+    '-z': '-z',
+    'north': '-z',
+};
+
+const PICKAXE_RANK = ['netherite_pickaxe', 'diamond_pickaxe', 'iron_pickaxe', 'stone_pickaxe', 'golden_pickaxe', 'wooden_pickaxe'];
+const TORCH_SPACING = 10;
+const MAX_WALK_BLOCKS = 512;
+
+function parseTunnelDirection(direction) {
+    if (typeof direction !== 'string') return null;
+    const key = TUNNEL_DIRECTION_ALIASES[direction.trim().toLowerCase()];
+    return key ? TUNNEL_AXES[key] : null;
+}
+
+function tunnelFeet(bot) {
+    const pos = bot.entity.position;
+    return new Vec3(Math.floor(pos.x), Math.floor(pos.y + 0.05), Math.floor(pos.z));
+}
+
+function canWalkThrough(block) {
+    if (!block || block.name === 'lava') return false;
+    if (block.name === 'water') return true;
+    return block.boundingBox === 'empty';
+}
+
+function aheadColumn(bot, dx, dz) {
+    const feet = tunnelFeet(bot);
+    const foot = bot.blockAt(feet.offset(dx, 0, dz));
+    const head = bot.blockAt(feet.offset(dx, 1, dz));
+    const above = bot.blockAt(feet.offset(dx, 2, dz));
+    if (!foot || !head || !above) {
+        return { unloaded: true, foot, head, above, step: false, wall: false, lava: false };
+    }
+    const lava = foot.name === 'lava' || head.name === 'lava';
+    const footOpen = canWalkThrough(foot);
+    const headOpen = canWalkThrough(head);
+    const aboveOpen = canWalkThrough(above);
+    const step = !lava && !footOpen && headOpen && aboveOpen;
+    const wall = lava || (!step && (!footOpen || !headOpen));
+    return { unloaded: false, foot, head, above, step, wall, lava };
+}
+
+async function faceAxis(bot, dx, dz) {
+    const eye = bot.entity.eyeHeight || 1.62;
+    await bot.lookAt(bot.entity.position.offset(dx * 16, eye, dz * 16), true);
+}
+
+async function haltMovement(bot) {
+    bot.setControlState('forward', false);
+    bot.setControlState('back', false);
+    bot.setControlState('left', false);
+    bot.setControlState('right', false);
+    bot.setControlState('jump', false);
+    bot.setControlState('sprint', false);
+    bot.setControlState('sneak', true);
+    await wait(bot, 150);
+    bot.setControlState('sneak', false);
+}
+
+function pickaxeRemainingDurability(item) {
+    const max = item.maxDurability;
+    if (max == null) return Number.MAX_SAFE_INTEGER;
+    const used = item.durabilityUsed || 0;
+    return max - used;
+}
+
+async function equipBestPickaxe(bot) {
+    const picks = bot.inventory.items().filter(item => {
+        if (!item.name.endsWith('_pickaxe')) return false;
+        return pickaxeRemainingDurability(item) > 0;
+    });
+    if (picks.length === 0) return false;
+    picks.sort((a, b) => {
+        const rankA = PICKAXE_RANK.indexOf(a.name);
+        const rankB = PICKAXE_RANK.indexOf(b.name);
+        const sortedRankA = rankA === -1 ? PICKAXE_RANK.length : rankA;
+        const sortedRankB = rankB === -1 ? PICKAXE_RANK.length : rankB;
+        if (sortedRankA !== sortedRankB) return sortedRankA - sortedRankB;
+        return pickaxeRemainingDurability(b) - pickaxeRemainingDurability(a);
+    });
+    try {
+        await bot.equip(picks[0], 'hand');
+    } catch (err) {
+        log(bot, `Failed to equip ${picks[0].name}: ${err.message}`);
+        return false;
+    }
+    log(bot, `Equipped ${picks[0].name}.`);
+    return true;
+}
+
+async function walkUntilWall(bot, dx, dz) {
+    bot.pathfinder.stop();
+    await faceAxis(bot, dx, dz);
+    const origin = bot.entity.position.clone();
+    let lastProgress = Date.now();
+    let lastPos = origin.clone();
+    let stepSince = 0;
+    bot.setControlState('forward', true);
+
+    while (!bot.interrupt_code) {
+        const column = aheadColumn(bot, dx, dz);
+        if (column.unloaded) {
+            await haltMovement(bot);
+            log(bot, 'Stopped walking: the blocks ahead are not loaded.');
+            return 'unloaded';
+        }
+        if (column.lava) {
+            await haltMovement(bot);
+            log(bot, `Stopped walking: lava ahead at ${column.foot.position.x}, ${column.foot.position.y}, ${column.foot.position.z}.`);
+            return 'lava';
+        }
+        if (column.wall) {
+            await haltMovement(bot);
+            log(bot, `Reached a wall at ${column.foot.position.x}, ${column.foot.position.y}, ${column.foot.position.z}.`);
+            return 'wall';
+        }
+
+        const pos = bot.entity.position;
+        if (column.step) {
+            if (stepSince === 0) stepSince = Date.now();
+            bot.setControlState('jump', true);
+            if (Date.now() - stepSince > 1200) {
+                await haltMovement(bot);
+                log(bot, `Reached a wall at ${column.foot.position.x}, ${column.foot.position.y}, ${column.foot.position.z}.`);
+                return 'wall';
+            }
+        } else {
+            stepSince = 0;
+            bot.setControlState('jump', false);
+        }
+
+        const walked = Math.abs(pos.x - origin.x) + Math.abs(pos.z - origin.z);
+        if (walked > MAX_WALK_BLOCKS) {
+            await haltMovement(bot);
+            log(bot, `Stopped walking: no wall within ${MAX_WALK_BLOCKS} blocks.`);
+            return 'no-wall';
+        }
+
+        const leftDrift = (pos.x - origin.x) * dz - (pos.z - origin.z) * dx;
+        bot.setControlState('left', leftDrift < -0.6);
+        bot.setControlState('right', leftDrift > 0.6);
+        bot.setControlState('forward', true);
+
+        if (pos.distanceTo(lastPos) >= 0.2) {
+            lastPos = pos.clone();
+            lastProgress = Date.now();
+        } else if (Date.now() - lastProgress > 2000 && !column.step) {
+            bot.setControlState('jump', true);
+            const jumped = await wait(bot, 400);
+            bot.setControlState('jump', false);
+            if (!jumped) {
+                await haltMovement(bot);
+                return 'interrupted';
+            }
+            if (bot.entity.position.distanceTo(lastPos) < 0.2) {
+                const again = aheadColumn(bot, dx, dz);
+                await haltMovement(bot);
+                if (again.unloaded) {
+                    log(bot, 'Stopped walking: the blocks ahead are not loaded.');
+                    return 'unloaded';
+                }
+                if (again.lava) {
+                    log(bot, `Stopped walking: lava ahead at ${again.foot.position.x}, ${again.foot.position.y}, ${again.foot.position.z}.`);
+                    return 'lava';
+                }
+                if (again.wall || again.step) {
+                    log(bot, `Reached a wall at ${again.foot.position.x}, ${again.foot.position.y}, ${again.foot.position.z}.`);
+                    return 'wall';
+                }
+                log(bot, 'Stopped walking: movement is blocked.');
+                return 'blocked';
+            }
+            lastProgress = Date.now();
+            lastPos = bot.entity.position.clone();
+        }
+
+        await faceAxis(bot, dx, dz);
+        const paused = await wait(bot, 50);
+        if (!paused) {
+            await haltMovement(bot);
+            return 'interrupted';
+        }
+    }
+
+    await haltMovement(bot);
+    return 'interrupted';
+}
+
+async function excavateBlock(bot, pos) {
+    const block = bot.blockAt(pos);
+    if (!block) {
+        log(bot, `Tunnel stopped: the block at ${pos.x}, ${pos.y}, ${pos.z} is not loaded.`);
+        return 'stop';
+    }
+    if (block.name === 'lava' || block.name === 'water') {
+        log(bot, `Tunnel stopped: ${block.name} at ${pos.x}, ${pos.y}, ${pos.z}.`);
+        return 'stop';
+    }
+    if (block.boundingBox === 'empty') return 'clear';
+    if (block.diggable === false) {
+        log(bot, `Tunnel stopped: cannot dig ${block.name} at ${pos.x}, ${pos.y}, ${pos.z}.`);
+        return 'stop';
+    }
+    const dug = await breakBlockAt(bot, pos.x, pos.y, pos.z);
+    if (!dug) {
+        log(bot, 'Tunnel stopped.');
+        return 'stop';
+    }
+    return 'dug';
+}
+
+async function clearTunnelSlice(bot, footPos) {
+    for (const dy of [1, 0]) {
+        const pos = footPos.offset(0, dy, 0);
+        let cleared = false;
+        for (let attempt = 0; attempt < 5; attempt++) {
+            const result = await excavateBlock(bot, pos);
+            if (result === 'stop') return false;
+            if (result === 'clear') {
+                cleared = true;
+                break;
+            }
+        }
+        if (!cleared) {
+            const block = bot.blockAt(pos);
+            log(bot, `Tunnel stopped: ${block ? block.name : 'a block'} kept falling at ${pos.x}, ${pos.y}, ${pos.z}.`);
+            return false;
+        }
+    }
+    return true;
+}
+
+async function stepOnto(bot, dx, dz, target) {
+    bot.pathfinder.stop();
+    const deadline = Date.now() + 4000;
+    while (Date.now() < deadline) {
+        if (bot.interrupt_code) {
+            await haltMovement(bot);
+            return false;
+        }
+        const pos = bot.entity.position;
+        const standing = new Vec3(Math.floor(pos.x), Math.floor(pos.y + 0.05), Math.floor(pos.z));
+        if (standing.x === target.x && standing.z === target.z && Math.abs(standing.y - target.y) <= 1) {
+            await haltMovement(bot);
+            return true;
+        }
+        await faceAxis(bot, dx, dz);
+        const towardX = (target.x + 0.5) - pos.x;
+        const towardZ = (target.z + 0.5) - pos.z;
+        const forward = towardX * dx + towardZ * dz;
+        const leftAmount = towardX * dz - towardZ * dx;
+        bot.setControlState('forward', forward > 0.15);
+        bot.setControlState('back', forward < -0.15);
+        bot.setControlState('left', leftAmount > 0.15);
+        bot.setControlState('right', leftAmount < -0.15);
+        bot.setControlState('jump', target.y > pos.y + 0.2);
+        const paused = await wait(bot, 50);
+        if (!paused) {
+            await haltMovement(bot);
+            return false;
+        }
+    }
+    await haltMovement(bot);
+    return false;
+}
+
+async function backUp(bot, dx, dz) {
+    bot.pathfinder.stop();
+    await faceAxis(bot, dx, dz);
+    bot.setControlState('back', true);
+    bot.setControlState('sneak', true);
+    await wait(bot, 250);
+    bot.setControlState('back', false);
+    bot.setControlState('sneak', false);
+}
+
+async function placeLeftWallTorch(bot, headPos, axis) {
+    const wall = bot.blockAt(headPos.offset(axis.leftDx, 0, axis.leftDz));
+    if (!wall || wall.boundingBox === 'empty' || wall.name === 'lava' || wall.name === 'water') {
+        log(bot, `No left wall for a torch at ${headPos.x}, ${headPos.y}, ${headPos.z}.`);
+        return false;
+    }
+    if (!bot.inventory.findInventoryItem('torch')) {
+        log(bot, 'No torches in inventory. Continuing without a torch.');
+        return false;
+    }
+    const placed = await placeBlock(bot, 'torch', headPos.x, headPos.y, headPos.z, axis.placeOn, true);
+    if (!placed) {
+        log(bot, `Could not place a torch on the left wall at ${headPos.x}, ${headPos.y}, ${headPos.z}.`);
+    }
+    return placed;
+}
+
+export async function boreTunnel(bot, distance, direction) {
+    /**
+     * Walk in a cardinal direction until a wall, then bore a 1 by 2 tunnel that many blocks into the wall.
+     * Equips the best pickaxe in the inventory before digging. Places a torch on the left wall every 10 blocks when torches are in the inventory.
+     * East, west, north, and south are accepted as the same axes as +x, -x, +z, and -z.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {number} distance, how many blocks to bore into the wall.
+     * @param {string} direction, one of "+x", "-x", "+z", or "-z".
+     * @returns {Promise<boolean>} true if the tunnel reached the full distance.
+     * @example
+     * await skills.boreTunnel(bot, 20, "+x");
+     **/
+    const axis = parseTunnelDirection(direction);
+    const length = Number(distance);
+    if (!axis) {
+        log(bot, `Direction must be one of +x, -x, +z, -z. Received: ${direction}`);
+        return false;
+    }
+    if (!Number.isInteger(length) || length < 1) {
+        log(bot, `Distance must be a positive integer. Received: ${distance}`);
+        return false;
+    }
+
+    bot.modes.pause('unstuck');
+    bot.modes.pause('idle_staring');
+    let torchesPlaced = 0;
+    let notedNoTorch = false;
+    try {
+        log(bot, `Walking ${axis.label} until a wall, then boring ${length} blocks.`);
+        const walked = await walkUntilWall(bot, axis.dx, axis.dz);
+        if (walked !== 'wall') return false;
+
+        const equipped = await equipBestPickaxe(bot);
+        if (!equipped) {
+            log(bot, 'No pickaxe in inventory. Digging with the current tool.');
+        }
+
+        const anchor = tunnelFeet(bot);
+        let bored = 0;
+        for (let i = 1; i <= length; i++) {
+            if (bot.interrupt_code) {
+                log(bot, `Tunnel interrupted after ${bored} of ${length} blocks.`);
+                return false;
+            }
+            const footPos = anchor.offset(axis.dx * i, 0, axis.dz * i);
+            const cleared = await clearTunnelSlice(bot, footPos);
+            if (!cleared) {
+                log(bot, `Bored ${bored} of ${length} blocks ${axis.label}.`);
+                return false;
+            }
+            bored = i;
+
+            if (i % TORCH_SPACING === 0) {
+                const torch = bot.inventory.findInventoryItem('torch');
+                if (!torch) {
+                    if (!notedNoTorch) {
+                        log(bot, 'No torches in inventory. The tunnel will not be lit.');
+                        notedNoTorch = true;
+                    }
+                } else {
+                    await backUp(bot, axis.dx, axis.dz);
+                    const headPos = footPos.offset(0, 1, 0);
+                    const placed = await placeLeftWallTorch(bot, headPos, axis);
+                    if (placed) torchesPlaced++;
+                    await equipBestPickaxe(bot);
+                }
+            }
+
+            const entered = await stepOnto(bot, axis.dx, axis.dz, footPos);
+            if (!entered) {
+                log(bot, `Bored ${bored} of ${length} blocks ${axis.label}, then could not walk forward.`);
+                return false;
+            }
+        }
+
+        log(bot, `Bored a ${length} block tunnel ${axis.label}. Placed ${torchesPlaced} torches on the left wall.`);
+        return true;
+    } finally {
+        await haltMovement(bot);
+        bot.modes.unpause('idle_staring');
+        bot.modes.unpause('unstuck');
+    }
+}
+
+const STAIR_PASSABLE = ['air', 'cave_air', 'void_air', 'grass', 'short_grass', 'tall_grass', 'snow', 'dead_bush', 'fern'];
+const STAIR_FALLING = ['sand', 'red_sand', 'gravel'];
+const STAIR_MAX_FALLING = 8;
+const STAIR_MAX_DROP = 2;
+
+function isStairPassable(block) {
+    return !!block && STAIR_PASSABLE.includes(block.name);
+}
+
+function isStairFluid(block) {
+    return !!block && (block.name === 'water' || block.name === 'lava');
+}
+
+function isStairFalling(block) {
+    if (!block) return false;
+    if (STAIR_FALLING.includes(block.name)) return true;
+    return block.name.endsWith('_concrete_powder');
+}
+
+function stairWorldBottom(bot) {
+    return bot.game?.dimension === 'the_nether' || bot.game?.dimension === 'the_end' ? 0 : -64;
+}
+
+async function digStairsBlock(bot, x, y, z) {
+    const block = bot.blockAt(Vec3(x, y, z));
+    if (!block) {
+        log(bot, `Stairs stopped: the block at ${x}, ${y}, ${z} is not loaded.`);
+        return false;
+    }
+    if (isStairPassable(block)) return true;
+    if (isStairFluid(block)) {
+        log(bot, `Stairs stopped: ${block.name} at ${x}, ${y}, ${z}.`);
+        return false;
+    }
+    if (block.diggable === false) {
+        log(bot, `Stairs stopped: cannot dig ${block.name} at ${x}, ${y}, ${z}.`);
+        return false;
+    }
+
+    if (bot.modes.isOn('cheat')) {
+        if (useDelay) { await new Promise(resolve => setTimeout(resolve, blockPlaceDelay)); }
+        bot.chat('/setblock ' + Math.floor(x) + ' ' + Math.floor(y) + ' ' + Math.floor(z) + ' air');
+        log(bot, `Used /setblock to break block at ${x}, ${y}, ${z}.`);
+        return true;
+    }
+
+    if (bot.entity.position.distanceTo(block.position) > 4.5) {
+        log(bot, `Stairs stopped: ${block.name} at ${x}, ${y}, ${z} is out of reach.`);
+        return false;
+    }
+
+    if (bot.game.gameMode !== 'creative') {
+        const itemId = bot.heldItem ? bot.heldItem.type : null;
+        if (!block.canHarvest(itemId)) {
+            log(bot, `Don't have right tools to break ${block.name}.`);
+            return false;
+        }
+    }
+
+    try {
+        await bot.dig(block, true);
+    } catch (err) {
+        log(bot, `Failed to dig ${block.name} at ${x}, ${y}, ${z}.`);
+        return false;
+    }
+    log(bot, `Broke ${block.name} at x:${x.toFixed(1)}, y:${y.toFixed(1)}, z:${z.toFixed(1)}.`);
+    return true;
+}
+
+async function clearStairFallingAbove(bot, faceX, faceY, faceZ) {
+    const positions = [];
+    for (let i = 1; i <= STAIR_MAX_FALLING; i++) {
+        const pos = new Vec3(faceX, faceY + i, faceZ);
+        const block = bot.blockAt(pos);
+        if (!block) {
+            log(bot, `Stairs stopped: the block at ${pos.x}, ${pos.y}, ${pos.z} is not loaded.`);
+            return false;
+        }
+        if (!isStairFalling(block)) break;
+        positions.push(pos);
+    }
+    for (let i = positions.length - 1; i >= 0; i--) {
+        const pos = positions[i];
+        const dug = await digStairsBlock(bot, pos.x, pos.y, pos.z);
+        if (!dug) return false;
+    }
+    return true;
+}
+
+async function placeStairLeftTorch(bot, stepFeet, axis) {
+    if (!bot.inventory.findInventoryItem('torch')) {
+        log(bot, 'No torches in inventory. Continuing without a torch.');
+        return false;
+    }
+
+    const candidates = [
+        stepFeet.offset(0, 1, 0),
+        stepFeet,
+    ];
+    for (const torchPos of candidates) {
+        const wall = bot.blockAt(torchPos.offset(axis.leftDx, 0, axis.leftDz));
+        if (!wall || wall.boundingBox === 'empty' || isStairFluid(wall)) {
+            continue;
+        }
+        const placed = await placeBlock(bot, 'torch', torchPos.x, torchPos.y, torchPos.z, axis.placeOn, true);
+        if (placed) return true;
+        log(bot, `Could not place a torch on the left wall at ${torchPos.x}, ${torchPos.y}, ${torchPos.z}.`);
+    }
+    log(bot, `No solid left wall for a torch at step ${stepFeet.x}, ${stepFeet.y}, ${stepFeet.z}.`);
+    return false;
+}
+
+async function stepOntoStair(bot, target) {
+    if (bot.modes.isOn('cheat')) {
+        bot.chat('/tp @s ' + (target.x + 0.5) + ' ' + target.y + ' ' + (target.z + 0.5));
+        await wait(bot, 100);
+        return true;
+    }
+
+    const movements = new pf.Movements(bot);
+    movements.canDig = false;
+    movements.canPlaceOn = false;
+    bot.pathfinder.setMovements(movements);
+    try {
+        await bot.pathfinder.goto(new pf.goals.GoalBlock(target.x, target.y, target.z));
+    } catch (err) {
+        log(bot, `Stairs stopped: could not step onto ${target.x}, ${target.y}, ${target.z}: ${err.message}.`);
+        return false;
+    }
+    return true;
+}
+
+export async function digStairs(bot, direction, y) {
+    /**
+     * Dig a one-block staircase in +x, -x, +z, or -z until the bot's feet are at the target Y.
+     * Each step opens only the next face (head and feet) and the floor under that face, then steps forward and down.
+     * Equips the strongest pickaxe in the inventory before each step. Places a torch on the left wall every 10 steps when torches are in the inventory.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {string} direction, one of "+x", "-x", "+z", or "-z". "x" and "z" mean the positive axis.
+     * @param {number} y, absolute feet Y to dig down to.
+     * @returns {Promise<boolean>} true if the bot's feet reach the target Y.
+     * @example
+     * await skills.digStairs(bot, "+x", 32);
+     **/
+    const axis = parseTunnelDirection(direction);
+    const targetY = Number(y);
+    if (!axis) {
+        log(bot, `Direction must be one of +x, -x, +z, -z. Received: ${direction}`);
+        return false;
+    }
+    if (!Number.isFinite(targetY)) {
+        log(bot, `Target Y must be a number. Received: ${y}`);
+        return false;
+    }
+
+    let feet = tunnelFeet(bot);
+    if (feet.y <= targetY) {
+        log(bot, `Already at or below Y ${targetY}.`);
+        return true;
+    }
+    if (targetY > feet.y) {
+        log(bot, `Target Y ${targetY} is above current feet Y ${feet.y}.`);
+        return false;
+    }
+
+    bot.modes.pause('unstuck');
+    bot.modes.pause('idle_staring');
+    let steps = 0;
+    let torchesPlaced = 0;
+
+    try {
+        log(bot, `Digging stairs ${axis.label} down to Y ${targetY}.`);
+        while (feet.y > targetY) {
+            if (bot.interrupt_code) {
+                log(bot, `Stairs interrupted after ${steps} steps at Y ${feet.y}.`);
+                return false;
+            }
+
+            await equipBestPickaxe(bot);
+
+            const headPos = feet.offset(axis.dx, 1, axis.dz);
+            const facePos = feet.offset(axis.dx, 0, axis.dz);
+            const floorPos = feet.offset(axis.dx, -1, axis.dz);
+            const underFloor = feet.offset(axis.dx, -2, axis.dz);
+
+            if (floorPos.y < stairWorldBottom(bot)) {
+                log(bot, `Stairs stopped after ${steps} steps: next floor is below the world bottom.`);
+                return false;
+            }
+
+            const head = bot.blockAt(headPos);
+            const face = bot.blockAt(facePos);
+            const floor = bot.blockAt(floorPos);
+            const below = bot.blockAt(underFloor);
+            if (!head || !face || !floor || !below) {
+                log(bot, `Stairs stopped after ${steps} steps: blocks ahead are not loaded.`);
+                return false;
+            }
+
+            if (isStairFluid(head) || isStairFluid(face) || isStairFluid(floor) || isStairFluid(below)) {
+                const fluid = [head, face, floor, below].find(isStairFluid);
+                log(bot, `Stairs stopped after ${steps} steps: reached ${fluid.name}.`);
+                return false;
+            }
+
+            let dropBlocks = 0;
+            let probe = below;
+            for (let j = 0; j <= STAIR_MAX_DROP; j++) {
+                if (!probe || (probe.name !== 'air' && probe.name !== 'cave_air' && probe.name !== 'void_air')) {
+                    break;
+                }
+                dropBlocks++;
+                probe = bot.blockAt(probe.position.offset(0, -1, 0));
+            }
+            if (dropBlocks > STAIR_MAX_DROP) {
+                log(bot, `Stairs stopped after ${steps} steps: reached a drop below the next floor.`);
+                return false;
+            }
+
+            const clearedFalling = await clearStairFallingAbove(bot, facePos.x, facePos.y + 1, facePos.z);
+            if (!clearedFalling) {
+                log(bot, `Stairs stopped after ${steps} steps at Y ${feet.y}.`);
+                return false;
+            }
+
+            for (const pos of [headPos, facePos, floorPos]) {
+                const dug = await digStairsBlock(bot, pos.x, pos.y, pos.z);
+                if (!dug) {
+                    log(bot, `Stairs stopped after ${steps} steps at Y ${feet.y}.`);
+                    return false;
+                }
+            }
+
+            steps++;
+            if (steps % TORCH_SPACING === 0) {
+                const placed = await placeStairLeftTorch(bot, facePos.offset(0, -1, 0), axis);
+                if (placed) torchesPlaced++;
+            }
+
+            const beforeY = feet.y;
+            const stepped = await stepOntoStair(bot, floorPos);
+            if (!stepped) {
+                log(bot, `Stairs stopped after ${steps} steps at Y ${beforeY}: could not step down.`);
+                return false;
+            }
+
+            feet = tunnelFeet(bot);
+            if (feet.y !== beforeY - 1) {
+                log(bot, `Stairs stopped after ${steps} steps: expected feet Y ${beforeY - 1}, got ${feet.y}.`);
+                return false;
+            }
+        }
+
+        log(bot, `Dug stairs ${axis.label} to Y ${feet.y} in ${steps} steps. Placed ${torchesPlaced} torches.`);
+        return true;
+    } finally {
+        bot.pathfinder.stop();
+        await haltMovement(bot);
+        bot.modes.unpause('idle_staring');
+        bot.modes.unpause('unstuck');
+    }
+}
+
 export async function goToSurface(bot) {
     /**
      * Navigate to the surface (highest non-air block at current x,z).
