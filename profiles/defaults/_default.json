@@ -230,6 +230,26 @@
         [
             {"role": "user", "content": "miner_32: bore 10 blocks +x into that wall"},
             {"role": "assistant", "content": "Starting the bore. !boreTunnel(10, \"+x\")"}
+        ],
+        [
+            {"role": "user", "content": "steve: dig stairs east down to y 32"},
+            {"role": "assistant", "content": "Digging stairs east. !digStairs(\"+x\", 32)"}
+        ],
+        [
+            {"role": "user", "content": "maya: dig a staircase west until you're at Y 0"},
+            {"role": "assistant", "content": "Stairs going west. !digStairs(\"-x\", 0)"}
+        ],
+        [
+            {"role": "user", "content": "rupert: dig stairs south down to bedrock level at y -59"},
+            {"role": "assistant", "content": "On it. !digStairs(\"+z\", -59)"}
+        ],
+        [
+            {"role": "user", "content": "gort: make a stairway north to y 12 and light it with torches"},
+            {"role": "assistant", "content": "Digging stairs north. !digStairs(\"-z\", 12)"}
+        ],
+        [
+            {"role": "user", "content": "miner_32: digStairs +x to 40"},
+            {"role": "assistant", "content": "Starting the stairs. !digStairs(\"+x\", 40)"}
         ]
     ],
 
